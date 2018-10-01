@@ -1,5 +1,5 @@
 /* WiFi Example
- * Copyright (c) 2016 ARM Limited
+ * Copyright (c) 2018 ARM Limited
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,19 @@
 #include "mbed.h"
 #include "TCPSocket.h"
 
-WiFiInterface *wifi;
+
+#if (defined(TARGET_DISCO_L475VG_IOT01A) || defined(TARGET_DISCO_F413ZH))
+#include "ISM43362Interface.h"
+// ISM43362Interface wifi(MBED_CONF_APP_WIFI_SPI_MOSI, MBED_CONF_APP_WIFI_SPI_MISO, MBED_CONF_APP_WIFI_SPI_SCLK, MBED_CONF_APP_WIFI_SPI_NSS, MBED_CONF_APP_WIFI_RESET, MBED_CONF_APP_WIFI_DATAREADY, MBED_CONF_APP_WIFI_WAKEUP, false);
+ISM43362Interface wifi;
+#else // External WiFi modules
+
+#if MBED_CONF_APP_WIFI_SHIELD == WIFI_IDW0XX1
+#include "SpwfSAInterface.h"
+SpwfSAInterface wifi(MBED_CONF_APP_WIFI_TX, MBED_CONF_APP_WIFI_RX);
+#endif // MBED_CONF_APP_WIFI_SHIELD == WIFI_IDW0XX1
+
+#endif
 
 const char *sec2str(nsapi_security_t sec)
 {
@@ -44,11 +56,11 @@ int scan_demo(WiFiInterface *wifi)
 
     printf("Scan:\n");
 
-    int count = wifi->scan(NULL,0);
-
-    if (count <= 0) {
-        printf("scan() failed with return value: %d\n", count);
-        return 0;
+    int count = -1;
+    for(int x=0;x<10;x++){
+        count = wifi->scan(NULL,0);
+        printf("%d networks available.\n", count);
+        wait(1);
     }
 
     /* Limit number of network arbitrary to 15 */
@@ -56,18 +68,12 @@ int scan_demo(WiFiInterface *wifi)
 
     ap = new WiFiAccessPoint[count];
     count = wifi->scan(ap, count);
-
-    if (count <= 0) {
-        printf("scan() failed with return value: %d\n", count);
-        return 0;
-    }
-
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count; i++)
+    {
         printf("Network: %s secured: %s BSSID: %hhX:%hhX:%hhX:%hhx:%hhx:%hhx RSSI: %hhd Ch: %hhd\n", ap[i].get_ssid(),
                sec2str(ap[i].get_security()), ap[i].get_bssid()[0], ap[i].get_bssid()[1], ap[i].get_bssid()[2],
                ap[i].get_bssid()[3], ap[i].get_bssid()[4], ap[i].get_bssid()[5], ap[i].get_rssi(), ap[i].get_channel());
     }
-    printf("%d networks available.\n", count);
 
     delete[] ap;
     return count;
@@ -81,13 +87,8 @@ void http_demo(NetworkInterface *net)
     printf("Sending HTTP request to www.arm.com...\n");
 
     // Open a socket on the network interface, and create a TCP connection to www.arm.com
-    response = socket.open(net);
-    if(0 != response) {
-        printf("socket.open() failed: %d\n", response);
-        return;
-    }
-
-    response = socket.connect("api.ipify.org", 80);
+    socket.open(net);
+    response = socket.connect("www.arm.com", 80);
     if(0 != response) {
         printf("Error connecting: %d\n", response);
         socket.close();
@@ -95,22 +96,24 @@ void http_demo(NetworkInterface *net)
     }
 
     // Send a simple http request
-    char sbuffer[] = "GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n";
+    char sbuffer[] = "GET / HTTP/1.1\r\nHost: www.arm.com\r\n\r\n";
     nsapi_size_t size = strlen(sbuffer);
-
-    // Loop until whole request send
-    while(size) {
+    response = 0;
+    while(size)
+    {
         response = socket.send(sbuffer+response, size);
         if (response < 0) {
             printf("Error sending data: %d\n", response);
             socket.close();
             return;
+        } else {
+            size -= response;
+            // Check if entire message was sent or not
+            printf("sent %d [%.*s]\n", response, strstr(sbuffer, "\r\n")-sbuffer, sbuffer);
         }
-        size -= response;
-        printf("sent %d [%.*s]\n", response, strstr(sbuffer, "\r\n")-sbuffer, sbuffer);
     }
 
-    // Receieve a simple http response and print out the response line
+    // Recieve a simple http response and print out the response line
     char rbuffer[64];
     response = socket.recv(rbuffer, sizeof rbuffer);
     if (response < 0) {
@@ -127,41 +130,31 @@ int main()
 {
     int count = 0;
 
-    printf("WiFi example\n");
+    printf("WiFi example\n\n");
 
-#ifdef MBED_MAJOR_VERSION
-    printf("Mbed OS version %d.%d.%d\n\n", MBED_MAJOR_VERSION, MBED_MINOR_VERSION, MBED_PATCH_VERSION);
-#endif
-
-    wifi = WiFiInterface::get_default_instance();
-    if (!wifi) {
-        printf("ERROR: No WiFiInterface found.\n");
-        return -1;
-    }
-
-    count = scan_demo(wifi);
+    count = scan_demo(&wifi);
     if (count == 0) {
         printf("No WIFI APNs found - can't continue further.\n");
         return -1;
     }
 
     printf("\nConnecting to %s...\n", MBED_CONF_APP_WIFI_SSID);
-    int ret = wifi->connect(MBED_CONF_APP_WIFI_SSID, MBED_CONF_APP_WIFI_PASSWORD, NSAPI_SECURITY_WPA_WPA2);
+    int ret = wifi.connect(MBED_CONF_APP_WIFI_SSID, MBED_CONF_APP_WIFI_PASSWORD, NSAPI_SECURITY_WPA_WPA2);
     if (ret != 0) {
-        printf("\nConnection error: %d\n", ret);
+        printf("\nConnection error\n");
         return -1;
     }
 
     printf("Success\n\n");
-    printf("MAC: %s\n", wifi->get_mac_address());
-    printf("IP: %s\n", wifi->get_ip_address());
-    printf("Netmask: %s\n", wifi->get_netmask());
-    printf("Gateway: %s\n", wifi->get_gateway());
-    printf("RSSI: %d\n\n", wifi->get_rssi());
+    printf("MAC: %s\n", wifi.get_mac_address());
+    printf("IP: %s\n", wifi.get_ip_address());
+    printf("Netmask: %s\n", wifi.get_netmask());
+    printf("Gateway: %s\n", wifi.get_gateway());
+    printf("RSSI: %d\n\n", wifi.get_rssi());
 
-    http_demo(wifi);
+    http_demo(&wifi);
 
-    wifi->disconnect();
+    wifi.disconnect();
 
     printf("\nDone\n");
 }
